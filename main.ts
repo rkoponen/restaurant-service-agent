@@ -1,16 +1,13 @@
-import { ChatGoogleGenerativeAI } from "npm:@langchain/google-genai";
-import { createAgent } from "npm:langchain";
+import { createAgent, ToolMessage } from "npm:langchain";
 import { MemorySaver } from "npm:@langchain/langgraph";
 import { Application, Router } from "https://deno.land/x/oak/mod.ts";
 import { oakCors } from "https://deno.land/x/cors/mod.ts";
-import z from "zod/v3";
 import { getMenu } from "./tools.ts";
-
-const model = new ChatGoogleGenerativeAI({
-  model: "gemini-2.0-flash",
-  temperature: 0.7,
-  apiKey: Deno.env.get("GOOGLE_GENAI_API_KEY") ?? "",
-});
+import { model } from "./model.ts";
+import { burgerAgent } from "./agents/burger-agent.ts";
+import { saladAgent } from "./agents/salad-agent.ts";
+import { orchestratorAgent } from "./agents/orchestrator-agent.ts";
+import { pizzaAgent } from "./agents/pizza-agent.ts";
 
 const systemPrompt = `You are a friendly and helpful restaurant customer service agent.
 You assist customers with their inquiries about restaurant services, menu items, reservations, and more.
@@ -38,61 +35,35 @@ const agent = createAgent({
   tools: [getMenu],
 });
 
+export const agents = {
+  orchestratorAgent: orchestratorAgent,
+  burgerAgent: burgerAgent,
+  saladAgent: saladAgent,
+  pizzaAgent: pizzaAgent,
+};
+
+export let currentAgent = orchestratorAgent;
+
+export const changeAgent = (agentName: keyof typeof agents) => {
+  if (agents[agentName]) {
+    console.log(`Switching to agent: ${agentName}`);
+    currentAgent = agents[agentName];
+  } else {
+    console.error(`Agent not found: ${agentName}`);
+  }
+};
+
 const router = new Router();
 
-router.get("/", (context) => {
-  context.response.body = "hello world";
-});
-
-router.post("/chat", async (context) => {
+router.get("/", async (context) => {
   try {
-    // Parse the request body
-    const bodyJson = await context.request.body.json();
-
-    const message = bodyJson.message;
-    const sessionId = bodyJson.sessionId;
-
-    // Validate required fields
-    if (!message || typeof message !== "string") {
-      context.response.status = 400;
-      context.response.body = {
-        error: "Field 'message' is required and must be a string",
-      };
-      return;
-    }
-
-    if (!sessionId || typeof sessionId !== "string") {
-      context.response.status = 400;
-      context.response.body = {
-        error: "Field 'sessionId' is required and must be a string",
-      };
-      return;
-    }
-
-    // Configure the agent with the session ID
-    const config = {
-      configurable: { thread_id: sessionId },
-    };
-
-    // Invoke the agent with the user's message
-    const llmResponse = await agent.invoke(
-      { messages: [{ role: "user", content: message }] },
-      config
-    );
-
-    // Extract the reply from the agent's response
-    const reply = llmResponse.messages[llmResponse.messages.length - 1].content;
-
-    // Send the response
-    context.response.status = 200;
-    context.response.body = {
-      sessionId,
-      reply,
-    };
+    const html = await Deno.readTextFile("./chat-interface.html");
+    context.response.headers.set("Content-Type", "text/html");
+    context.response.body = html;
   } catch (error) {
-    console.error("Error in /chat endpoint:", error);
+    console.error("Error serving HTML:", error);
     context.response.status = 500;
-    context.response.body = { error: "Internal server error" };
+    context.response.body = "Error loading page";
   }
 });
 
@@ -138,27 +109,74 @@ router.post("/chat/stream", async (context) => {
         const encoder = new TextEncoder();
 
         try {
+          // Track the agent before streaming starts
+          const agentBeforeStream = currentAgent;
+          let agentSwitched = false;
+
           // Stream the agent's response token by token
-          const streamResponse = await agent.stream(
+          const streamResponse = await currentAgent.stream(
             { messages: [{ role: "user", content: message }] },
             config
           );
 
-          for await (const [token, metadata] of streamResponse) {
+          for await (const [token, _metadata] of streamResponse) {
+            // console.log(token);
+            // console.log(_metadata);
             // Only stream content from the agent node, not tool calls or tool responses
-            if (metadata.langgraph_node === "agent") {
-              // Extract content blocks from the token
-              if (token.contentBlocks && token.contentBlocks.length > 0) {
-                // Send each token as SSE data
-                for (const block of token.contentBlocks) {
-                  if (block.text) {
-                    const data = `data: ${JSON.stringify({
-                      content: block.text,
-                      node: metadata.langgraph_node,
-                    })}\n\n`;
-                    controller.enqueue(encoder.encode(data));
-                  }
-                }
+            // Extract content blocks from the token
+            if (
+              token.content &&
+              token.content.length > 0 &&
+              !(token instanceof ToolMessage)
+            ) {
+              const data = `data: ${JSON.stringify({
+                content: token.content,
+              })}\n\n`;
+
+              controller.enqueue(encoder.encode(data));
+            }
+
+            // Check if agent switched during the stream (either to a specialist or back to orchestrator)
+            if (currentAgent !== agentBeforeStream) {
+              agentSwitched = true;
+            }
+          }
+
+          // If agent was switched, activate the new agent with a greeting
+          if (agentSwitched && currentAgent != orchestratorAgent) {
+            console.log(
+              `Agent switched from ${
+                agentBeforeStream === orchestratorAgent
+                  ? "orchestrator"
+                  : "specialist"
+              } to ${
+                currentAgent === orchestratorAgent
+                  ? "orchestrator"
+                  : "specialist"
+              }`
+            );
+
+            // Determine the greeting based on which agent we switched to
+            let greeting = "Hello";
+
+            // If returning to orchestrator, ask if they need anything else
+            // Send greeting to the new agent to trigger its response
+            const welcomeStream = await currentAgent.stream(
+              { messages: [{ role: "user", content: "Hello" }] },
+              config
+            );
+
+            for await (const [token, _metadata] of welcomeStream) {
+              if (
+                token.content &&
+                token.content.length > 0 &&
+                !(token instanceof ToolMessage)
+              ) {
+                const data = `data: ${JSON.stringify({
+                  content: token.content,
+                })}\n\n`;
+
+                controller.enqueue(encoder.encode(data));
               }
             }
           }
