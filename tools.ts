@@ -3,14 +3,22 @@ import z from "zod/v3";
 import { changeAgent } from "./main.ts";
 
 export const completeOrder = tool(
-  () => {
+  ({ orderSummary }) => {
+    console.log("Order marked as complete. Returning to orchestrator.");
     changeAgent("orchestratorAgent");
-    return "Order completed successfully. Returning to main menu.";
+    return `Order completed successfully: ${orderSummary}. Customer has been returned to the main assistant.`;
   },
   {
     name: "complete_order",
     description:
-      "Mark the order as complete and return control to the orchestrator. Use this after the customer has confirmed their order.",
+      "Mark the order as complete and return control to the orchestrator. Use this after the customer has confirmed their order and you've presented the final order summary.",
+    schema: z.object({
+      orderSummary: z
+        .string()
+        .describe(
+          "A brief summary of what was ordered (e.g., '1x Bacon Burger, Total: $12.99')"
+        ),
+    }),
   }
 );
 

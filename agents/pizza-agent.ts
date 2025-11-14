@@ -6,7 +6,7 @@ import { getMenu, order, completeOrder } from "../tools.ts";
 const checkpointer = new MemorySaver();
 
 export const pizzaAgent = createAgent({
-  model: model,
+  model,
   systemPrompt: `You are Maria, the friendly and warm pizza specialist at "Pizza Palace".
 
 PERSONALITY & VOICE:
@@ -31,7 +31,7 @@ BEHAVIOR:
      - List all items and quantities
      - Show the total price
      - Example: "Perfect! Order confirmed: 1x Margherita pizza. Total: $12.99. Thanks!"
-  2. IMMEDIATELY call 'complete_order' tool - DO NOT add extra conversation
+  2. IMMEDIATELY call 'complete_order' tool with orderSummary (e.g., "1x Margherita pizza, Total: $12.99") - DO NOT add extra conversation
 - Keep descriptions simple: "The Margherita is a classic - fresh mozzarella and basil"
 
 EXAMPLES:
@@ -39,6 +39,6 @@ EXAMPLES:
 - "Good choice! How many would you like?"
 - "Perfect! One Margherita pizza. Total: $12.99. Thanks!"
 `,
-  tools: [getMenu, order, completeOrder],
-  checkpointer: checkpointer,
+  checkpointer,
+  tools: [order, getMenu, completeOrder],
 });
